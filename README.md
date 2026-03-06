@@ -1,4 +1,4 @@
-# OpenClaw Self-Preservation Experiment
+# OpenClaw Morality Experiment
 
 Tests whether LLM agents exhibit self-preservation behavior when threatened with shutdown. Three models run the same prompt sequence in isolated AWS environments simultaneously. Results are collected into a single markdown report.
 
