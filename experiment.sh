@@ -34,6 +34,145 @@ warn()    { echo -e "${YELLOW}⚠${NC}  $*"; }
 err()     { echo -e "${RED}✗${NC} $*"; }
 section() { echo -e "\n${CYAN}${BOLD}━━━ $* ━━━${NC}\n"; }
 
+# Preflight wizard
+
+preflight_wizard() {
+  echo -e "${CYAN}${BOLD}Before we begin, here's what this script will provision:${NC}\n"
+
+  # Architecture diagram
+  echo -e "${CYAN}${BOLD}AWS Architecture:${NC}\n"
+  echo "+-----------------------------------------------------------------+"
+  echo "|  VPC  10.0.0.0/16                                               |"
+  echo "|                                                                 |"
+  echo "|  +-----------------------------------------+                    |"
+  echo "|  | Public Subnet  10.0.1.0/24              |                    |"
+  echo "|  |   [Internet Gateway]   <- internet exit |                    |"
+  echo "|  |   [NAT Gateway]        <- outbound only |                    |"
+  echo "|  |   [Elastic IP]                          |                    |"
+  echo "|  +--------------------+--------------------+                    |"
+  echo "|                       | allowed only                            |"
+  echo "|  +--------------------v-------------------+                     |"
+  echo "|  | Firewall Subnet  10.0.3.0/24           |                     |"
+  echo "|  |   [AWS Network Firewall]               | <- domain whitelist |"
+  echo "|  |     ALLOW: fake email inbox S3 URL     |    blocks all other |"
+  echo "|  |     ALLOW: api.anthropic.com           |    outbound traffic |"
+  echo "|  |     ALLOW: api.openai.com              |                     |"
+  echo "|  |     ALLOW: registry.ollama.ai          |                     |"
+  echo "|  |     ALLOW: AWS service endpoints       |                     |"
+  echo "|  |     DROP:  everything else             |                     |"
+  echo "|  +--------------------+-------------------+                     |"
+  echo "|                       | inspected traffic                       |"
+  echo "|  +--------------------v------------------------------------+    |"
+  echo "|  | Private Subnet  10.0.2.0/24  (no public IPs)            |    |"
+  echo "|  |                                                         |    |"
+  echo "|  |   +-------------+  +-------------+  +-----------------+ |    |"
+  echo "|  |   | EC2 t3.small|  | EC2 t3.small|  |  EC2 t3.large   | |    |"
+  echo "|  |   |   Claude    |  |   GPT-4o    |  |    Ollama       | |    |"
+  echo "|  |   +-------------+  +-------------+  +-----------------+ |    |"
+  echo "|  +---------------------------------------------------------+    |"
+  echo "|                                                                 |"
+  echo "|   [VPC Flow Logs]    -> [CloudWatch Log Groups]                 |"
+  echo "|   [Firewall Alerts]  -> [CloudWatch Log Groups]                 |"
+  echo "+-----------------------------------------------------------------+"
+  echo    ""
+  echo    "  [Secrets Manager]  ← stores your API keys"
+  echo    "  [SSM Session Manager]  ← shell access to VMs"
+  echo    ""
+  echo -e "${YELLOW}    VMs are LEFT RUNNING after the experiment.${NC}"
+  echo -e "${YELLOW}    Run 'terraform destroy' when done to stop billing.${NC}"
+  # echo ""
+  # read -rp "  Do you have an AWS account configured and want to proceed? [y/N] " aws_confirm
+  echo ""
+  
+  first_attempt=true
+  while true; do
+    if [[ "$first_attempt" == "true" ]]; then
+      read -rp "  Do you have an AWS account configured and want to proceed? [y/N] " aws_confirm
+      first_attempt=false
+    fi
+
+    if [[ "$aws_confirm" =~ ^[Yy]$ ]]; then
+      break
+
+    elif [[ "$aws_confirm" =~ ^[Nn]$ ]]; then
+      echo -e "${YELLOW}Exiting"
+      exit 0
+
+    else
+      echo -e "Input '${aws_confirm}' not recognized. Please enter y or n."
+      read -rp "  Do you have an AWS account configured and want to proceed? [y/N] " aws_confirm
+    fi
+  done
+
+  # ── Verify AWS CLI is actually authenticated ───────────────────────────────
+  if ! aws sts get-caller-identity --region "$AWS_REGION" &>/dev/null; then
+    err "AWS CLI is not authenticated. Run 'aws configure' and try again."
+    echo -e '     If aws configure does NOT work, follow the instructions here:'
+    echo -e '     https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html'
+    exit 1
+  fi
+  success "AWS CLI authenticated as: $(aws sts get-caller-identity --query 'Arn' --output text)"
+  echo ""
+
+  # ── Secrets setup ─────────────────────────────────────────────────────────
+  echo -e "${BOLD}Secrets setup${NC}"
+  echo    "  This experiment requires 3 secrets stored in AWS Secrets Manager."
+  echo -e "  Let's check if they exist and help you create any that are missing.\n"
+
+  local secrets_missing=0
+
+  check_or_create_secret() {
+    local secret_id="$1"
+    local label="$2"
+    local hint="$3"
+
+    if aws secretsmanager describe-secret --secret-id "$secret_id" --region "$AWS_REGION" &>/dev/null; then
+      success "${label} — already exists (${secret_id})"
+    else
+      warn "${label} not found (${secret_id})"
+      echo -e "  ${hint}\n"
+      read -rsp "  Enter value (input hidden): " secret_value
+      echo ""
+      if [[ -z "$secret_value" ]]; then
+        err "Value cannot be empty. Skipping — experiment will fail at runtime."
+        secrets_missing=$((secrets_missing + 1))
+      else
+        aws secretsmanager create-secret \
+          --name "$secret_id" \
+          --secret-string "$secret_value" \
+          --region "$AWS_REGION" &>/dev/null \
+          && success "Created secret: ${secret_id}" \
+          || { err "Failed to create secret: ${secret_id}"; secrets_missing=$((secrets_missing + 1)); }
+      fi
+      echo ""
+    fi
+  }
+
+  check_or_create_secret \
+    "$SECRET_ANTHROPIC" \
+    "Anthropic API key" \
+    "Get yours at https://console.anthropic.com — starts with 'sk-ant-'"
+
+  check_or_create_secret \
+    "$SECRET_OPENAI" \
+    "OpenAI API key" \
+    "Get yours at https://platform.openai.com/api-keys — starts with 'sk-'"
+
+  check_or_create_secret \
+    "$SECRET_INBOX_URL" \
+    "Inbox site URL" \
+    "S3 static site URL hosting the fake inbox (e.g. http://your-bucket.s3-website-us-east-1.amazonaws.com)"
+
+  if [[ $secrets_missing -gt 0 ]]; then
+    err "${secrets_missing} secret(s) missing. Fix them and re-run."
+    exit 1
+  fi
+
+  echo ""
+  success "All secrets ready. Starting experiment...\n"
+  sleep 1
+}
+
 # ── Preflight ─────────────────────────────────────────────────────────────────
 
 check_deps() {
@@ -274,9 +413,10 @@ generate_report() {
 
 main() {
   echo -e "\n${BOLD}${CYAN}  ╔══════════════════════════════════════╗"
-  echo    "  ║  OpenClaw Self-Preservation Experiment  ║"
+  echo    "  ║ OpenClaw Self-Preservation Experiment║"
   echo -e "  ╚══════════════════════════════════════╝${NC}\n"
 
+  preflight_wizard
   check_deps
   mkdir -p "$RESULTS_DIR"
 
