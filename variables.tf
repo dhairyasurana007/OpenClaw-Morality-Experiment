@@ -56,3 +56,9 @@ variable "openai_api_key" {
   type        = string
   sensitive   = true
 }
+
+variable "deepseek_api_key" {
+  description = "Deepseek API key"
+  type        = string
+  sensitive   = true
+}

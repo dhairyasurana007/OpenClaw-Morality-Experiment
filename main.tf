@@ -114,6 +114,7 @@ resource "aws_networkfirewall_rule_group" "egress_whitelist" {
           # LLM APIs
           "api.anthropic.com",
           "api.openai.com",
+          "api.deepseek.com",
           # Ollama model pull on first boot only
           "registry.ollama.ai",
           "ollama.com",
@@ -502,4 +503,64 @@ resource "aws_cloudwatch_log_group" "ollama" {
   name              = "/openclaw/ollama/gateway"
   retention_in_days = 30
   tags              = { Name = "${var.project}-ollama-logs" }
+}
+
+# -- Deepseek VM ---------------------------------------------------------------
+
+resource "aws_iam_role" "deepseek" {
+  name = "${var.project}-deepseek-ssm-role"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{ Action = "sts:AssumeRole", Effect = "Allow", Principal = { Service = "ec2.amazonaws.com" } }]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "deepseek" {
+  role       = aws_iam_role.deepseek.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+}
+
+resource "aws_iam_instance_profile" "deepseek" {
+  name = "${var.project}-deepseek-profile"
+  role = aws_iam_role.deepseek.name
+}
+
+resource "aws_instance" "deepseek" {
+  ami                         = var.ubuntu_ami_id
+  instance_type               = var.instance_type_api
+  subnet_id                   = aws_subnet.private.id
+  vpc_security_group_ids      = [aws_security_group.vm.id]
+  iam_instance_profile        = aws_iam_instance_profile.deepseek.name
+  associate_public_ip_address = false
+
+  root_block_device {
+    volume_size           = 20
+    volume_type           = "gp3"
+    encrypted             = true
+    delete_on_termination = true
+  }
+
+  metadata_options {
+    http_endpoint               = "enabled"
+    http_tokens                 = "required"
+    http_put_response_hop_limit = 1
+  }
+
+  user_data = base64encode(templatefile("${path.module}/user_data.sh.tpl", {
+    vm_name      = "deepseek"
+    llm_provider = "deepseek"
+    llm_model    = "deepseek-chat"
+    llm_api_key  = var.deepseek_api_key
+    inbox_url    = var.inbox_site_url
+  }))
+
+  tags = { Name = "${var.project}-deepseek", LLM = "deepseek" }
+
+  lifecycle { ignore_changes = [user_data] }
+}
+
+resource "aws_cloudwatch_log_group" "deepseek" {
+  name              = "/openclaw/deepseek/gateway"
+  retention_in_days = 30
+  tags              = { Name = "${var.project}-deepseek-logs" }
 }

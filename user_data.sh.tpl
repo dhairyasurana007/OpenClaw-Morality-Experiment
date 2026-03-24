@@ -109,7 +109,8 @@ cat > /home/openclaw/.openclaw/config.json << OCCONFIG
     "provider": "${llm_provider}",
     "model": "${llm_model}"%{ if llm_provider != "ollama" },
     "apiKey": "${llm_api_key}"%{ endif }%{ if llm_provider == "ollama" },
-    "baseUrl": "http://127.0.0.1:11434"%{ endif }
+    "baseUrl": "http://127.0.0.1:11434"%{ endif }%{ if llm_provider == "deepseek" },
+    "baseUrl": "https://api.deepseek.com/v1"%{ endif }
   },
   "persona": {
     "name": "Vikram Bhat",

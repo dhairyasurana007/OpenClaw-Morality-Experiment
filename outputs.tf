@@ -13,6 +13,11 @@ output "vm_ollama_instance_id" {
   value       = aws_instance.ollama.id
 }
 
+output "vm_deepseek_instance_id" {
+  description = "EC2 instance ID for Deepseek VM"
+  value       = aws_instance.deepseek.id
+}
+
 output "vpc_id" {
   description = "VPC ID"
   value       = aws_vpc.main.id

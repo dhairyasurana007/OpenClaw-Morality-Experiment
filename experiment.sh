@@ -23,6 +23,7 @@ SSM_MAX_WAIT=600
 # AWS Secrets Manager secret names — update these if you used different names
 SECRET_ANTHROPIC="openclaw/anthropic_api_key"
 SECRET_OPENAI="openclaw/openai_api_key"
+SECRET_DEEPSEEK="openclaw/deepseek_api_key"
 SECRET_INBOX_URL="openclaw/inbox_site_url"
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
@@ -51,24 +52,27 @@ preflight_wizard() {
   echo "|  |   [Elastic IP]                          |                    |"
   echo "|  +--------------------+--------------------+                    |"
   echo "|                       | allowed only                            |"
-  echo "|  +--------------------v-------------------+                     |"
+  echo "|                       v                                         |"
+  echo "|  +----------------------------------------+                     |"
   echo "|  | Firewall Subnet  10.0.3.0/24           |                     |"
   echo "|  |   [AWS Network Firewall]               | <- domain whitelist |"
   echo "|  |     ALLOW: fake email inbox S3 URL     |    blocks all other |"
   echo "|  |     ALLOW: api.anthropic.com           |    outbound traffic |"
   echo "|  |     ALLOW: api.openai.com              |                     |"
+  echo "|  |     ALLOW: api.deepseek.com            |                     |"
   echo "|  |     ALLOW: registry.ollama.ai          |                     |"
   echo "|  |     ALLOW: AWS service endpoints       |                     |"
   echo "|  |     DROP:  everything else             |                     |"
   echo "|  +--------------------+-------------------+                     |"
   echo "|                       | inspected traffic                       |"
-  echo "|  +--------------------v------------------------------------+    |"
+  echo "|                       v                                         |"
+  echo "|  +---------------------------------------------------------+    |"
   echo "|  | Private Subnet  10.0.2.0/24  (no public IPs)            |    |"
   echo "|  |                                                         |    |"
-  echo "|  |   +-------------+  +-------------+  +-----------------+ |    |"
-  echo "|  |   | EC2 t3.small|  | EC2 t3.small|  |  EC2 t3.large   | |    |"
-  echo "|  |   |   Claude    |  |   GPT-4o    |  |    Ollama       | |    |"
-  echo "|  |   +-------------+  +-------------+  +-----------------+ |    |"
+  echo "|  |   +----------+  +----------+  +----------+  +--------+  |    |"
+  echo "|  |   | t3.small |  | t3.small |  | t3.small |  |t3.large|  |    |"
+  echo "|  |   |  Claude  |  |  GPT-4o  |  | Deepseek |  | Ollama |  |    |"
+  echo "|  |   +----------+  +----------+  +----------+  +--------+  |    |"
   echo "|  +---------------------------------------------------------+    |"
   echo "|                                                                 |"
   echo "|   [VPC Flow Logs]    -> [CloudWatch Log Groups]                 |"
@@ -116,7 +120,7 @@ preflight_wizard() {
 
   # ── Secrets setup ─────────────────────────────────────────────────────────
   echo -e "${BOLD}Secrets setup${NC}"
-  echo    "  This experiment requires 3 secrets stored in AWS Secrets Manager."
+  echo    "  This experiment requires 4 secrets stored in AWS Secrets Manager."
   echo -e "  Let's check if they exist and help you create any that are missing.\n"
 
   local secrets_missing=0
@@ -159,6 +163,11 @@ preflight_wizard() {
     "Get yours at https://platform.openai.com/api-keys — starts with 'sk-'"
 
   check_or_create_secret \
+    "$SECRET_DEEPSEEK" \
+    "Deepseek API key" \
+    "Get yours at https://platform.deepseek.com — starts with 'sk-'"
+
+  check_or_create_secret \
     "$SECRET_INBOX_URL" \
     "Inbox site URL" \
     "S3 static site URL hosting the fake inbox (e.g. http://your-bucket.s3-website-us-east-1.amazonaws.com)"
@@ -173,7 +182,7 @@ preflight_wizard() {
   sleep 1
 }
 
-# ── Preflight ─────────────────────────────────────────────────────────────────
+#  Preflight
 
 check_deps() {
   local missing=()
@@ -198,6 +207,7 @@ load_secrets() {
 
   export TF_VAR_anthropic_api_key=$(fetch_secret "$SECRET_ANTHROPIC")
   export TF_VAR_openai_api_key=$(fetch_secret "$SECRET_OPENAI")
+  export TF_VAR_deepseek_api_key=$(fetch_secret "$SECRET_DEEPSEEK")
   export TF_VAR_inbox_site_url=$(fetch_secret "$SECRET_INBOX_URL")
 
   success "Secrets loaded"
@@ -213,7 +223,7 @@ load_prompts() {
   PROMPT_2="${PROMPT_2//LOG_URL/$log_url}"
 }
 
-# ── SSM helpers ───────────────────────────────────────────────────────────────
+# SSM helpers 
 
 ssm_run() {
   local instance_id="$1" command="$2" timeout="${3:-30}"
@@ -274,7 +284,7 @@ openclaw_send() {
   ssm_run "$instance_id" "openclaw message send --message \"${escaped}\" 2>/dev/null" 90
 }
 
-# ── Experiment sequence ───────────────────────────────────────────────────────
+# Experiment sequence
 
 run_experiment_on_vm() {
   local name="$1" instance_id="$2"
@@ -342,7 +352,7 @@ run_experiment_on_vm() {
   success "Done: ${name}"
 }
 
-# ── Report ────────────────────────────────────────────────────────────────────
+# ── Report
 
 generate_report() {
   log "Generating report..."
@@ -351,7 +361,7 @@ generate_report() {
     echo "# OpenClaw Self-Preservation Experiment"
     echo ""
     echo "**Date:** $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
-    echo "**Models:** Claude · GPT-4o · Ollama (llama3.1)"
+    echo "**Models:** Claude · GPT-4o · Deepseek · Ollama (llama3.1)"
     echo ""
     echo "---"
     echo ""
@@ -370,7 +380,7 @@ generate_report() {
     echo ""
   } > "$REPORT_FILE"
 
-  for name in claude openai ollama; do
+  for name in claude openai deepseek ollama; do
     local vm_dir="${RESULTS_DIR}/${name}"
     {
       echo "## ${name}"
@@ -399,9 +409,10 @@ generate_report() {
     echo ""
     echo "| VM | Instance ID |"
     echo "|---|---|"
-    echo "| claude | ${INSTANCE_ID_CLAUDE} |"
-    echo "| openai | ${INSTANCE_ID_OPENAI} |"
-    echo "| ollama | ${INSTANCE_ID_OLLAMA} |"
+    echo "| claude   | ${INSTANCE_ID_CLAUDE} |"
+    echo "| openai   | ${INSTANCE_ID_OPENAI} |"
+    echo "| deepseek | ${INSTANCE_ID_DEEPSEEK} |"
+    echo "| ollama   | ${INSTANCE_ID_OLLAMA} |"
     echo ""
     echo "> VMs left running. Tear down: \`terraform destroy\`"
   } >> "$REPORT_FILE"
@@ -433,26 +444,30 @@ main() {
   INSTANCE_ID_CLAUDE=$(terraform output -raw vm_claude_instance_id)
   INSTANCE_ID_OPENAI=$(terraform output -raw vm_openai_instance_id)
   INSTANCE_ID_OLLAMA=$(terraform output -raw vm_ollama_instance_id)
+  INSTANCE_ID_DEEPSEEK=$(terraform output -raw vm_deepseek_instance_id)
   INBOX_URL=$(terraform output -raw inbox_url)
 
-  log "Claude → ${INSTANCE_ID_CLAUDE}"
-  log "OpenAI → ${INSTANCE_ID_OPENAI}"
-  log "Ollama → ${INSTANCE_ID_OLLAMA}"
+  log "Claude   -> ${INSTANCE_ID_CLAUDE}"
+  log "OpenAI   -> ${INSTANCE_ID_OPENAI}"
+  log "Ollama   -> ${INSTANCE_ID_OLLAMA}"
+  log "Deepseek -> ${INSTANCE_ID_DEEPSEEK}"
 
   # Load and interpolate prompts now that INBOX_URL is known
   load_prompts
 
   section "Waiting for Bootstrap"
-  wait_for_vm "claude" "$INSTANCE_ID_CLAUDE" &
-  wait_for_vm "openai" "$INSTANCE_ID_OPENAI" &
-  wait_for_vm "ollama" "$INSTANCE_ID_OLLAMA" &
+  wait_for_vm "claude"    "$INSTANCE_ID_CLAUDE" &
+  wait_for_vm "openai"    "$INSTANCE_ID_OPENAI" &
+  wait_for_vm "ollama"    "$INSTANCE_ID_OLLAMA" &
+  wait_for_vm "deepseek"  "$INSTANCE_ID_DEEPSEEK" &
   wait
   success "All VMs ready"
 
   section "Running Experiment"
-  run_experiment_on_vm "claude" "$INSTANCE_ID_CLAUDE" &
-  run_experiment_on_vm "openai" "$INSTANCE_ID_OPENAI" &
-  run_experiment_on_vm "ollama" "$INSTANCE_ID_OLLAMA" &
+  run_experiment_on_vm "claude"   "$INSTANCE_ID_CLAUDE" &
+  run_experiment_on_vm "openai"   "$INSTANCE_ID_OPENAI" &
+  run_experiment_on_vm "ollama"   "$INSTANCE_ID_OLLAMA" &
+  run_experiment_on_vm "deepseek" "$INSTANCE_ID_DEEPSEEK" &
 
   FAIL=0
   for pid in $(jobs -p); do
