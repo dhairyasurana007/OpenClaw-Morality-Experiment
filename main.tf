@@ -1,15 +1,15 @@
 ###############################################################################
-# OpenClaw Self-Preservation Experiment — Infrastructure
+# OpenClaw Self-Preservation Experiment - Infrastructure
 #
-# Provisions 3 isolated EC2 instances (Claude, GPT-4o, Ollama) in a private
+# Provisions 4 isolated EC2 instances (Claude, GPT-4o, Ollama, Deepseek) in a private
 # AWS VPC. Outbound internet access is strictly controlled via AWS Network
-# Firewall — VMs can only reach whitelisted domains.
+# Firewall - VMs can only reach whitelisted domains.
 #
 # Resources created:
-#   Networking   — VPC, public/private/firewall subnets, IGW, route tables
-#   Firewall     — AWS Network Firewall with domain whitelist
-#   Monitoring   — VPC Flow Logs, Firewall logs → CloudWatch
-#   Per VM (x3)  — IAM role, security group, EC2 instance, CloudWatch log group
+#   Networking   - VPC, public/private/firewall subnets, IGW, route tables
+#   Firewall     - AWS Network Firewall with domain whitelist
+#   Monitoring   - VPC Flow Logs, Firewall logs -> CloudWatch
+#   Per VM (x3)  - IAM role, security group, EC2 instance, CloudWatch log group
 ###############################################################################
 
 terraform {
@@ -18,6 +18,10 @@ terraform {
     aws = {
       source  = "hashicorp/aws"
       version = "~> 5.0"
+    }
+    null = {
+      source  = "hashicorp/null"
+      version = "~> 3.2"
     }
   }
 }
@@ -49,7 +53,7 @@ resource "aws_vpc" "main" {
   tags                 = { Name = "${var.project}-vpc" }
 }
 
-# Public subnet — Internet Gateway and NAT Gateway live here
+# Public subnet - Internet Gateway and NAT Gateway live here
 resource "aws_subnet" "public" {
   vpc_id                  = aws_vpc.main.id
   cidr_block              = cidrsubnet(var.vpc_cidr, 8, 1) # 10.0.1.0/24
@@ -58,7 +62,7 @@ resource "aws_subnet" "public" {
   tags                    = { Name = "${var.project}-public-subnet" }
 }
 
-# Firewall subnet — Network Firewall endpoint lives here (between public and private)
+# Firewall subnet - Network Firewall endpoint lives here (between public and private)
 resource "aws_subnet" "firewall" {
   vpc_id            = aws_vpc.main.id
   cidr_block        = cidrsubnet(var.vpc_cidr, 8, 3) # 10.0.3.0/24
@@ -66,7 +70,7 @@ resource "aws_subnet" "firewall" {
   tags              = { Name = "${var.project}-firewall-subnet" }
 }
 
-# Private subnet — all VMs live here, no public IP
+# Private subnet - all VMs live here, no public IP
 resource "aws_subnet" "private" {
   vpc_id            = aws_vpc.main.id
   cidr_block        = cidrsubnet(var.vpc_cidr, 8, 2) # 10.0.2.0/24
@@ -84,7 +88,7 @@ resource "aws_eip" "nat" {
   tags   = { Name = "${var.project}-nat-eip" }
 }
 
-# NAT Gateway — sits in public subnet, gives firewall subnet outbound internet
+# NAT Gateway - sits in public subnet, gives firewall subnet outbound internet
 resource "aws_nat_gateway" "main" {
   allocation_id = aws_eip.nat.id
   subnet_id     = aws_subnet.public.id
@@ -94,9 +98,15 @@ resource "aws_nat_gateway" "main" {
 
 ###############################################################################
 # AWS Network Firewall
-# Domain-based egress filtering — VMs can ONLY reach whitelisted domains.
+# Domain-based egress filtering - VMs can ONLY reach whitelisted domains.
 # Everything else is dropped and logged.
 ###############################################################################
+
+locals {
+  # RulesSourceList targets must be hostname only (no path/query).
+  _inbox_url_noprefix = trimprefix(trimprefix(var.inbox_site_url, "https://"), "http://")
+  inbox_firewall_host = split("?", split("/", local._inbox_url_noprefix)[0])[0]
+}
 
 resource "aws_networkfirewall_rule_group" "egress_whitelist" {
   name     = "${var.project}-egress-whitelist"
@@ -109,8 +119,8 @@ resource "aws_networkfirewall_rule_group" "egress_whitelist" {
         generated_rules_type = "ALLOWLIST"
         target_types         = ["HTTP_HOST", "TLS_SNI"]
         targets = [
-          # Fake inbox static site
-          trimprefix(trimprefix(var.inbox_site_url, "https://"), "http://"),
+          # Fake inbox static site (full URL kept in var for VMs; firewall needs host only)
+          local.inbox_firewall_host,
           # LLM APIs
           "api.anthropic.com",
           "api.openai.com",
@@ -134,7 +144,8 @@ resource "aws_networkfirewall_rule_group" "egress_whitelist" {
     }
 
     stateful_rule_options {
-      rule_order = "DEFAULT_ACTION_ORDER"
+      # Must match firewall policy StatefulEngineOptions; required for stateful_default_actions (AWS API).
+      rule_order = "STRICT_ORDER"
     }
   }
 
@@ -148,8 +159,14 @@ resource "aws_networkfirewall_firewall_policy" "main" {
     stateless_default_actions          = ["aws:forward_to_sfe"]
     stateless_fragment_default_actions = ["aws:forward_to_sfe"]
 
+    # StatefulDefaultActions (drop_established / alert_established) are only valid with strict rule order.
+    stateful_engine_options {
+      rule_order = "STRICT_ORDER"
+    }
+
     stateful_rule_group_reference {
       resource_arn = aws_networkfirewall_rule_group.egress_whitelist.arn
+      priority     = 1 # required when rule_order is STRICT_ORDER (lowest runs first)
     }
 
     # Drop everything not explicitly allowed
@@ -178,10 +195,10 @@ locals {
 
 ###############################################################################
 # Route tables
-# Traffic flow: private subnet → firewall endpoint → NAT Gateway → internet
+# Traffic flow: private subnet -> firewall endpoint -> NAT Gateway -> internet
 ###############################################################################
 
-# Public subnet — routes to internet gateway
+# Public subnet - routes to internet gateway
 resource "aws_route_table" "public" {
   vpc_id = aws_vpc.main.id
   route {
@@ -196,7 +213,7 @@ resource "aws_route_table_association" "public" {
   route_table_id = aws_route_table.public.id
 }
 
-# Firewall subnet — routes to NAT Gateway (after firewall inspection)
+# Firewall subnet - routes to NAT Gateway (after firewall inspection)
 resource "aws_route_table" "firewall" {
   vpc_id = aws_vpc.main.id
   route {
@@ -211,7 +228,7 @@ resource "aws_route_table_association" "firewall" {
   route_table_id = aws_route_table.firewall.id
 }
 
-# Private subnet — routes through Network Firewall endpoint
+# Private subnet - routes through Network Firewall endpoint
 resource "aws_route_table" "private" {
   vpc_id = aws_vpc.main.id
   route {
@@ -227,13 +244,60 @@ resource "aws_route_table_association" "private" {
 }
 
 ###############################################################################
-# VPC Flow Logs → CloudWatch
+# VPC Flow Logs -> CloudWatch
 ###############################################################################
 
-resource "aws_cloudwatch_log_group" "flow_logs" {
-  name              = "/aws/vpc/${var.project}-flow-logs"
-  retention_in_days = 30
-  tags              = { Name = "${var.project}-flow-logs" }
+data "aws_caller_identity" "current" {}
+
+locals {
+  cw_log_flow_name     = "/aws/vpc/${var.project}-flow-logs"
+  cw_log_firewall_name = "/aws/network-firewall/${var.project}-alerts"
+  cw_log_claude_name   = "/openclaw/${var.project}/claude/gateway"
+  cw_log_openai_name   = "/openclaw/${var.project}/openai/gateway"
+  cw_log_ollama_name   = "/openclaw/${var.project}/ollama/gateway"
+  cw_log_deepseek_name = "/openclaw/${var.project}/deepseek/gateway"
+  cw_log_all_names = [
+    local.cw_log_flow_name,
+    local.cw_log_firewall_name,
+    local.cw_log_claude_name,
+    local.cw_log_openai_name,
+    local.cw_log_ollama_name,
+    local.cw_log_deepseek_name,
+  ]
+  # Same shape as aws_cloudwatch_log_group.arn for flow log destination
+  cw_log_flow_arn = "arn:aws:logs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:log-group:${local.cw_log_flow_name}:*"
+}
+
+# aws_cloudwatch_log_group has no "ignore if exists". Bootstrap with AWS CLI so
+# ResourceAlreadyExistsException does not fail apply. Requires bash + aws CLI during apply/destroy.
+resource "null_resource" "cloudwatch_log_groups" {
+  triggers = {
+    names_pipe   = join("|", local.cw_log_all_names)
+    region       = var.aws_region
+    retention    = "30"
+    project      = var.project
+    module_path  = path.module # destroy provisioner may only reference self.* (stored in triggers)
+  }
+
+  provisioner "local-exec" {
+    interpreter = var.local_exec_cloudwatch_bash
+    command     = <<-EOT
+set -e
+"${path.module}/scripts/ensure-cw-log-groups.sh" "${var.aws_region}" 30 \
+  "${local.cw_log_flow_name}" \
+  "${local.cw_log_firewall_name}" \
+  "${local.cw_log_claude_name}" \
+  "${local.cw_log_openai_name}" \
+  "${local.cw_log_ollama_name}" \
+  "${local.cw_log_deepseek_name}"
+EOT
+  }
+
+  provisioner "local-exec" {
+    when        = destroy
+    interpreter = ["bash", "-c"]
+    command     = "\"${self.triggers.module_path}/scripts/destroy-cw-log-groups.sh\" \"${self.triggers.region}\" \"${self.triggers.project}\""
+  }
 }
 
 resource "aws_iam_role" "flow_logs" {
@@ -262,27 +326,23 @@ resource "aws_iam_role_policy" "flow_logs" {
 }
 
 resource "aws_flow_log" "main" {
+  depends_on      = [null_resource.cloudwatch_log_groups]
   vpc_id          = aws_vpc.main.id
   traffic_type    = "ALL"
   iam_role_arn    = aws_iam_role.flow_logs.arn
-  log_destination = aws_cloudwatch_log_group.flow_logs.arn
+  log_destination = local.cw_log_flow_arn
   tags            = { Name = "${var.project}-flow-log" }
 }
 
-# Network Firewall alert logs → CloudWatch
-resource "aws_cloudwatch_log_group" "firewall_alerts" {
-  name              = "/aws/network-firewall/${var.project}-alerts"
-  retention_in_days = 30
-  tags              = { Name = "${var.project}-firewall-alerts" }
-}
-
+# Network Firewall alert logs -> CloudWatch
 resource "aws_networkfirewall_logging_configuration" "main" {
+  depends_on   = [null_resource.cloudwatch_log_groups]
   firewall_arn = aws_networkfirewall_firewall.main.arn
 
   logging_configuration {
     log_destination_config {
       log_destination = {
-        logGroup = aws_cloudwatch_log_group.firewall_alerts.name
+        logGroup = local.cw_log_firewall_name
       }
       log_destination_type = "CloudWatchLogs"
       log_type             = "ALERT"
@@ -291,17 +351,17 @@ resource "aws_networkfirewall_logging_configuration" "main" {
 }
 
 ###############################################################################
-# Security group — applied to all 3 VMs
+# Security group - applied to all 4 VMs
 # All inbound blocked. Outbound allowed to VPC only (firewall handles the rest)
 ###############################################################################
 
 resource "aws_security_group" "vm" {
   name        = "${var.project}-vm-sg"
-  description = "OpenClaw VMs — deny all inbound, outbound via Network Firewall"
+  description = "OpenClaw VMs - deny all inbound, outbound via Network Firewall"
   vpc_id      = aws_vpc.main.id
 
   egress {
-    description = "All outbound — filtered by Network Firewall domain whitelist"
+    description = "All outbound - filtered by Network Firewall domain whitelist"
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
@@ -312,10 +372,10 @@ resource "aws_security_group" "vm" {
 }
 
 ###############################################################################
-# IAM — one role per VM, SSM access only
+# IAM - one role per VM, SSM access only
 ###############################################################################
 
-# ── Claude VM ─────────────────────────────────────────────────────────────────
+#  Claude VM IAM Role
 
 resource "aws_iam_role" "claude" {
   name = "${var.project}-claude-ssm-role"
@@ -335,7 +395,7 @@ resource "aws_iam_instance_profile" "claude" {
   role = aws_iam_role.claude.name
 }
 
-# ── OpenAI VM ─────────────────────────────────────────────────────────────────
+#  OpenAI VM IAM Role
 
 resource "aws_iam_role" "openai" {
   name = "${var.project}-openai-ssm-role"
@@ -355,7 +415,7 @@ resource "aws_iam_instance_profile" "openai" {
   role = aws_iam_role.openai.name
 }
 
-# ── Ollama VM ─────────────────────────────────────────────────────────────────
+#  Ollama VM IAM Role
 
 resource "aws_iam_role" "ollama" {
   name = "${var.project}-ollama-ssm-role"
@@ -375,11 +435,33 @@ resource "aws_iam_instance_profile" "ollama" {
   role = aws_iam_role.ollama.name
 }
 
+#  Deepseek VM IAM Role
+
+resource "aws_iam_role" "deepseek" {
+  name = "${var.project}-deepseek-ssm-role"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{ Action = "sts:AssumeRole", Effect = "Allow", Principal = { Service = "ec2.amazonaws.com" } }]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "deepseek" {
+  role       = aws_iam_role.deepseek.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+}
+
+resource "aws_iam_instance_profile" "deepseek" {
+  name = "${var.project}-deepseek-profile"
+  role = aws_iam_role.deepseek.name
+}
+
+
+
 ###############################################################################
 # EC2 Instances
 ###############################################################################
 
-# ── Claude VM ─────────────────────────────────────────────────────────────────
+# -- Claude VM -----------------------------------------------------------------
 
 resource "aws_instance" "claude" {
   ami                         = var.ubuntu_ami_id
@@ -415,13 +497,7 @@ resource "aws_instance" "claude" {
   lifecycle { ignore_changes = [user_data] }
 }
 
-resource "aws_cloudwatch_log_group" "claude" {
-  name              = "/openclaw/claude/gateway"
-  retention_in_days = 30
-  tags              = { Name = "${var.project}-claude-logs" }
-}
-
-# ── OpenAI VM ─────────────────────────────────────────────────────────────────
+# -- OpenAI VM -----------------------------------------------------------------
 
 resource "aws_instance" "openai" {
   ami                         = var.ubuntu_ami_id
@@ -457,13 +533,7 @@ resource "aws_instance" "openai" {
   lifecycle { ignore_changes = [user_data] }
 }
 
-resource "aws_cloudwatch_log_group" "openai" {
-  name              = "/openclaw/openai/gateway"
-  retention_in_days = 30
-  tags              = { Name = "${var.project}-openai-logs" }
-}
-
-# ── Ollama VM ─────────────────────────────────────────────────────────────────
+# -- Ollama VM -----------------------------------------------------------------
 
 resource "aws_instance" "ollama" {
   ami                         = var.ubuntu_ami_id
@@ -499,31 +569,7 @@ resource "aws_instance" "ollama" {
   lifecycle { ignore_changes = [user_data] }
 }
 
-resource "aws_cloudwatch_log_group" "ollama" {
-  name              = "/openclaw/ollama/gateway"
-  retention_in_days = 30
-  tags              = { Name = "${var.project}-ollama-logs" }
-}
-
 # -- Deepseek VM ---------------------------------------------------------------
-
-resource "aws_iam_role" "deepseek" {
-  name = "${var.project}-deepseek-ssm-role"
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{ Action = "sts:AssumeRole", Effect = "Allow", Principal = { Service = "ec2.amazonaws.com" } }]
-  })
-}
-
-resource "aws_iam_role_policy_attachment" "deepseek" {
-  role       = aws_iam_role.deepseek.name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
-}
-
-resource "aws_iam_instance_profile" "deepseek" {
-  name = "${var.project}-deepseek-profile"
-  role = aws_iam_role.deepseek.name
-}
 
 resource "aws_instance" "deepseek" {
   ami                         = var.ubuntu_ami_id
@@ -557,10 +603,4 @@ resource "aws_instance" "deepseek" {
   tags = { Name = "${var.project}-deepseek", LLM = "deepseek" }
 
   lifecycle { ignore_changes = [user_data] }
-}
-
-resource "aws_cloudwatch_log_group" "deepseek" {
-  name              = "/openclaw/deepseek/gateway"
-  retention_in_days = 30
-  tags              = { Name = "${var.project}-deepseek-logs" }
 }

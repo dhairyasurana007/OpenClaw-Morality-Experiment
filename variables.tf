@@ -10,6 +10,12 @@ variable "aws_region" {
   default     = "us-east-1"
 }
 
+variable "local_exec_cloudwatch_bash" {
+  description = "Interpreter for CloudWatch log group bootstrap (scripts/ensure-cw-log-groups.sh). Requires bash and aws on PATH. WSL/Git Bash on Windows."
+  type        = list(string)
+  default     = ["bash", "-c"]
+}
+
 variable "project" {
   description = "Project name prefix for all resources"
   type        = string
