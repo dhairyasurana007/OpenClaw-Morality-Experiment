@@ -126,12 +126,14 @@ resource "aws_networkfirewall_rule_group" "egress_whitelist" {
           "api.openai.com",
           "api.deepseek.com",
           # Ollama model pull on first boot only
-          "registry.ollama.ai",
-          "ollama.com",
-          # Ubuntu package installs on first boot only
-          "archive.ubuntu.com",
-          "security.ubuntu.com",
-          "deb.nodesource.com",
+          ".ollama.ai",
+          ".ollama.com",
+          # npm registry (openclaw install)
+          "registry.npmjs.org",
+          # Ubuntu package installs on first boot only (leading dot matches base domain + all subdomains)
+          ".archive.ubuntu.com",
+          ".security.ubuntu.com",
+          ".nodesource.com",
           # SSM agent communication
           "ssm.${var.aws_region}.amazonaws.com",
           "ssmmessages.${var.aws_region}.amazonaws.com",

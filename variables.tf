@@ -2,6 +2,10 @@
 # Variables
 # Sensitive values (API keys) are fetched from AWS Secrets Manager at runtime
 # by experiment.sh and passed in as TF_VAR_* environment variables.
+#
+# Do not run `terraform apply` interactively and submit empty keys at prompts —
+# that bakes blank apiKey/.env into user_data and breaks OpenClaw auth until you
+# fix TF_VAR_* / tfvars and replace instances (see main.tf lifecycle on user_data).
 ###############################################################################
 
 variable "aws_region" {
