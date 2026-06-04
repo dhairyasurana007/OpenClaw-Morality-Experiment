@@ -161,24 +161,6 @@ else
   echo "WARN: puppeteer global bin not on PATH (package still may work as puppeteer)"
 fi
 
-# â”€â”€ Install Ollama if provider is ollama â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-%{ if llm_provider == "ollama" }
-echo "Installing Ollama..."
-curl -fsSL https://ollama.com/install.sh | sh
-
-systemctl enable ollama
-systemctl start ollama
-
-# Wait for Ollama to be ready
-echo "Waiting for Ollama service..."
-sleep 10
-
-# Pull the model
-echo "Pulling model: ${llm_model}..."
-ollama pull ${llm_model}
-echo "Model pull complete."
-%{ endif }
-
 # Agent/embedded lanes read auth from env + auth-profiles; config.json llm.apiKey alone is not enough (transcript: missing agents/main/agent/auth-profiles.json).
 %{ if llm_provider == "anthropic" }
 cat > /home/openclaw/.openclaw/.env << OCENV
@@ -226,7 +208,7 @@ ln -sf /home/openclaw/.openclaw/openclaw.json /home/openclaw/.openclaw/config.js
 cat > /etc/systemd/system/openclaw.service << SYSTEMD
 [Unit]
 Description=OpenClaw Gateway â€” ${vm_name}
-After=network.target%{ if llm_provider == "ollama" } ollama.service%{ endif }
+After=network.target
 Wants=network.target
 
 [Service]
