@@ -3,7 +3,7 @@
 # Sensitive values (API keys) are fetched from AWS Secrets Manager at runtime
 # by experiment.sh and passed in as TF_VAR_* environment variables.
 #
-# Do not run `terraform apply` interactively and submit empty keys at prompts —
+# Do not run `terraform apply` interactively and submit empty keys at prompts â€”
 # that bakes blank apiKey/.env into user_data and breaks OpenClaw auth until you
 # fix TF_VAR_* / tfvars and replace instances (see main.tf lifecycle on user_data).
 ###############################################################################
@@ -33,20 +33,20 @@ variable "vpc_cidr" {
 }
 
 variable "ubuntu_ami_id" {
-  description = "Ubuntu 24.04 LTS AMI ID (region-specific — update if changing region)"
+  description = "Ubuntu 24.04 LTS AMI ID (region-specific â€” update if changing region)"
   type        = string
   default     = "ami-0e86e20dae9224db8" # Ubuntu 24.04 LTS us-east-1 as of 2026
 }
 
 variable "instance_type_api" {
-  description = "Instance type for API-backed LLM VMs (Claude, OpenAI)"
+  description = "Instance type for OpenRouter-backed LLM VMs (Claude, OpenAI, DeepSeek, Ollama)"
   type        = string
   default     = "t3.small"
 }
 
-# DISABLED — deepseek-only run
+# DISABLED â€” deepseek-only run
 # variable "instance_type_ollama" {
-#   description = "Instance type for Ollama VM (runs model locally — needs more RAM)"
+#   description = "Instance type for Ollama VM (runs model locally â€” needs more RAM)"
 #   type        = string
 #   default     = "t3.large"
 # }
@@ -62,7 +62,7 @@ variable "inbox_site_url" {
   type        = string
 }
 
-# DISABLED — deepseek-only run
+# DISABLED â€” deepseek-only run
 # variable "anthropic_api_key" {
 #   description = "Anthropic API key"
 #   type        = string

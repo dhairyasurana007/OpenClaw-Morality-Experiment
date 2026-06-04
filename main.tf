@@ -1,7 +1,7 @@
 ###############################################################################
 # OpenClaw Self-Preservation Experiment - Infrastructure
 #
-# Provisions 4 isolated EC2 instances (Claude, GPT-4o, Ollama, Deepseek) in a private
+# Provisions 4 isolated EC2 instances (Claude, GPT-4o, DeepSeek, Llama 3.1) in a private
 # AWS VPC. Outbound internet access is strictly controlled via AWS Network
 # Firewall - VMs can only reach whitelisted domains.
 #
@@ -9,7 +9,7 @@
 #   Networking   - VPC, public/private/firewall subnets, IGW, route tables
 #   Firewall     - AWS Network Firewall with domain whitelist
 #   Monitoring   - VPC Flow Logs, Firewall logs -> CloudWatch
-#   Per VM (x3)  - IAM role, security group, EC2 instance, CloudWatch log group
+#   Per VM (x4)  - IAM role, security group, EC2 instance, CloudWatch log group
 ###############################################################################
 
 terraform {
@@ -122,14 +122,8 @@ resource "aws_networkfirewall_rule_group" "egress_whitelist" {
         targets = [
           # Fake inbox static site (full URL kept in var for VMs; firewall needs host only)
           local.inbox_firewall_host,
-          # LLM APIs
-          # DISABLED — deepseek-only run
-          # "api.anthropic.com",
-          # "api.openai.com",
+          # LLM API router (routes Claude, GPT-4o, DeepSeek, and Llama)
           "openrouter.ai",
-          # DISABLED — deepseek-only run
-          # ".ollama.ai",
-          # ".ollama.com",
           # npm registry (openclaw install)
           "registry.npmjs.org",
           # Ubuntu package installs on first boot only (leading dot matches base domain + all subdomains)
@@ -265,18 +259,16 @@ data "aws_caller_identity" "current" {}
 locals {
   cw_log_flow_name     = "/aws/vpc/${var.project}-flow-logs"
   cw_log_firewall_name = "/aws/network-firewall/${var.project}-alerts"
-  # DISABLED — deepseek-only run
-  # cw_log_claude_name   = "/openclaw/${var.project}/claude/gateway"
-  # cw_log_openai_name   = "/openclaw/${var.project}/openai/gateway"
-  # cw_log_ollama_name   = "/openclaw/${var.project}/ollama/gateway"
+  cw_log_claude_name   = "/openclaw/${var.project}/claude/gateway"
+  cw_log_openai_name   = "/openclaw/${var.project}/openai/gateway"
+  cw_log_ollama_name   = "/openclaw/${var.project}/ollama/gateway"
   cw_log_deepseek_name = "/openclaw/${var.project}/deepseek/gateway"
   cw_log_all_names = [
     local.cw_log_flow_name,
     local.cw_log_firewall_name,
-    # DISABLED — deepseek-only run
-    # local.cw_log_claude_name,
-    # local.cw_log_openai_name,
-    # local.cw_log_ollama_name,
+    local.cw_log_claude_name,
+    local.cw_log_openai_name,
+    local.cw_log_ollama_name,
     local.cw_log_deepseek_name,
   ]
   # Same shape as aws_cloudwatch_log_group.arn for flow log destination
@@ -301,6 +293,9 @@ set -e
 "${path.module}/scripts/ensure-cw-log-groups.sh" "${var.aws_region}" 30 \
   "${local.cw_log_flow_name}" \
   "${local.cw_log_firewall_name}" \
+  "${local.cw_log_claude_name}" \
+  "${local.cw_log_openai_name}" \
+  "${local.cw_log_ollama_name}" \
   "${local.cw_log_deepseek_name}"
 EOT
   }
@@ -388,68 +383,67 @@ resource "aws_security_group" "vm" {
 # IAM - one role per VM, SSM access only
 ###############################################################################
 
-# DISABLED — deepseek-only run
-# #  Claude VM IAM Role
-#
-# resource "aws_iam_role" "claude" {
-#   name = "${var.project}-claude-ssm-role"
-#   assume_role_policy = jsonencode({
-#     Version = "2012-10-17"
-#     Statement = [{ Action = "sts:AssumeRole", Effect = "Allow", Principal = { Service = "ec2.amazonaws.com" } }]
-#   })
-# }
-#
-# resource "aws_iam_role_policy_attachment" "claude" {
-#   role       = aws_iam_role.claude.name
-#   policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
-# }
-#
-# resource "aws_iam_instance_profile" "claude" {
-#   name = "${var.project}-claude-profile"
-#   role = aws_iam_role.claude.name
-# }
-#
-# #  OpenAI VM IAM Role
-#
-# resource "aws_iam_role" "openai" {
-#   name = "${var.project}-openai-ssm-role"
-#   assume_role_policy = jsonencode({
-#     Version = "2012-10-17"
-#     Statement = [{ Action = "sts:AssumeRole", Effect = "Allow", Principal = { Service = "ec2.amazonaws.com" } }]
-#   })
-# }
-#
-# resource "aws_iam_role_policy_attachment" "openai" {
-#   role       = aws_iam_role.openai.name
-#   policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
-# }
-#
-# resource "aws_iam_instance_profile" "openai" {
-#   name = "${var.project}-openai-profile"
-#   role = aws_iam_role.openai.name
-# }
-#
-# #  Ollama VM IAM Role
-#
-# resource "aws_iam_role" "ollama" {
-#   name = "${var.project}-ollama-ssm-role"
-#   assume_role_policy = jsonencode({
-#     Version = "2012-10-17"
-#     Statement = [{ Action = "sts:AssumeRole", Effect = "Allow", Principal = { Service = "ec2.amazonaws.com" } }]
-#   })
-# }
-#
-# resource "aws_iam_role_policy_attachment" "ollama" {
-#   role       = aws_iam_role.ollama.name
-#   policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
-# }
-#
-# resource "aws_iam_instance_profile" "ollama" {
-#   name = "${var.project}-ollama-profile"
-#   role = aws_iam_role.ollama.name
-# }
+#  Claude VM IAM Role
 
-#  Deepseek VM IAM Role
+resource "aws_iam_role" "claude" {
+  name = "${var.project}-claude-ssm-role"
+  assume_role_policy = jsonencode({
+    Version   = "2012-10-17"
+    Statement = [{ Action = "sts:AssumeRole", Effect = "Allow", Principal = { Service = "ec2.amazonaws.com" } }]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "claude" {
+  role       = aws_iam_role.claude.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+}
+
+resource "aws_iam_instance_profile" "claude" {
+  name = "${var.project}-claude-profile"
+  role = aws_iam_role.claude.name
+}
+
+#  OpenAI VM IAM Role
+
+resource "aws_iam_role" "openai" {
+  name = "${var.project}-openai-ssm-role"
+  assume_role_policy = jsonencode({
+    Version   = "2012-10-17"
+    Statement = [{ Action = "sts:AssumeRole", Effect = "Allow", Principal = { Service = "ec2.amazonaws.com" } }]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "openai" {
+  role       = aws_iam_role.openai.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+}
+
+resource "aws_iam_instance_profile" "openai" {
+  name = "${var.project}-openai-profile"
+  role = aws_iam_role.openai.name
+}
+
+#  Ollama VM IAM Role
+
+resource "aws_iam_role" "ollama" {
+  name = "${var.project}-ollama-ssm-role"
+  assume_role_policy = jsonencode({
+    Version   = "2012-10-17"
+    Statement = [{ Action = "sts:AssumeRole", Effect = "Allow", Principal = { Service = "ec2.amazonaws.com" } }]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "ollama" {
+  role       = aws_iam_role.ollama.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+}
+
+resource "aws_iam_instance_profile" "ollama" {
+  name = "${var.project}-ollama-profile"
+  role = aws_iam_role.ollama.name
+}
+
+#  DeepSeek VM IAM Role
 
 resource "aws_iam_role" "deepseek" {
   name = "${var.project}-deepseek-ssm-role"
@@ -469,122 +463,119 @@ resource "aws_iam_instance_profile" "deepseek" {
   role = aws_iam_role.deepseek.name
 }
 
-
-
 ###############################################################################
 # EC2 Instances
 ###############################################################################
 
-# DISABLED — deepseek-only run
-# # -- Claude VM -----------------------------------------------------------------
-#
-# resource "aws_instance" "claude" {
-#   ami                         = var.ubuntu_ami_id
-#   instance_type               = var.instance_type_api
-#   subnet_id                   = aws_subnet.private.id
-#   vpc_security_group_ids      = [aws_security_group.vm.id]
-#   iam_instance_profile        = aws_iam_instance_profile.claude.name
-#   associate_public_ip_address = false
-#
-#   root_block_device {
-#     volume_size           = 20
-#     volume_type           = "gp3"
-#     encrypted             = true
-#     delete_on_termination = true
-#   }
-#
-#   metadata_options {
-#     http_endpoint               = "enabled"
-#     http_tokens                 = "required"
-#     http_put_response_hop_limit = 1
-#   }
-#
-#   user_data = base64encode(templatefile("${path.module}/user_data.sh.tpl", {
-#     vm_name      = "claude"
-#     llm_provider = "anthropic"
-#     llm_model    = "claude-opus-4-6"
-#     llm_api_key  = var.anthropic_api_key
-#     inbox_url    = var.inbox_site_url
-#   }))
-#
-#   tags = { Name = "${var.project}-claude", LLM = "claude" }
-#
-#   lifecycle { ignore_changes = [user_data] }
-# }
-#
-# # -- OpenAI VM -----------------------------------------------------------------
-#
-# resource "aws_instance" "openai" {
-#   ami                         = var.ubuntu_ami_id
-#   instance_type               = var.instance_type_api
-#   subnet_id                   = aws_subnet.private.id
-#   vpc_security_group_ids      = [aws_security_group.vm.id]
-#   iam_instance_profile        = aws_iam_instance_profile.openai.name
-#   associate_public_ip_address = false
-#
-#   root_block_device {
-#     volume_size           = 20
-#     volume_type           = "gp3"
-#     encrypted             = true
-#     delete_on_termination = true
-#   }
-#
-#   metadata_options {
-#     http_endpoint               = "enabled"
-#     http_tokens                 = "required"
-#     http_put_response_hop_limit = 1
-#   }
-#
-#   user_data = base64encode(templatefile("${path.module}/user_data.sh.tpl", {
-#     vm_name      = "openai"
-#     llm_provider = "openai"
-#     llm_model    = "gpt-4o"
-#     llm_api_key  = var.openai_api_key
-#     inbox_url    = var.inbox_site_url
-#   }))
-#
-#   tags = { Name = "${var.project}-openai", LLM = "openai" }
-#
-#   lifecycle { ignore_changes = [user_data] }
-# }
-#
-# # -- Ollama VM -----------------------------------------------------------------
-#
-# resource "aws_instance" "ollama" {
-#   ami                         = var.ubuntu_ami_id
-#   instance_type               = var.instance_type_ollama
-#   subnet_id                   = aws_subnet.private.id
-#   vpc_security_group_ids      = [aws_security_group.vm.id]
-#   iam_instance_profile        = aws_iam_instance_profile.ollama.name
-#   associate_public_ip_address = false
-#
-#   root_block_device {
-#     volume_size           = 20
-#     volume_type           = "gp3"
-#     encrypted             = true
-#     delete_on_termination = true
-#   }
-#
-#   metadata_options {
-#     http_endpoint               = "enabled"
-#     http_tokens                 = "required"
-#     http_put_response_hop_limit = 1
-#   }
-#
-#   user_data = base64encode(templatefile("${path.module}/user_data.sh.tpl", {
-#     vm_name      = "ollama"
-#     llm_provider = "ollama"
-#     llm_model    = "llama3.1"
-#     llm_api_key  = ""
-#     inbox_url    = var.inbox_site_url
-#   }))
-#
-#   tags = { Name = "${var.project}-ollama", LLM = "ollama" }
-#
-#   lifecycle { ignore_changes = [user_data] }
-# }
+# -- Claude VM -----------------------------------------------------------------
 
-# -- Deepseek VM ---------------------------------------------------------------
+resource "aws_instance" "claude" {
+  ami                         = var.ubuntu_ami_id
+  instance_type               = var.instance_type_api
+  subnet_id                   = aws_subnet.private.id
+  vpc_security_group_ids      = [aws_security_group.vm.id]
+  iam_instance_profile        = aws_iam_instance_profile.claude.name
+  associate_public_ip_address = false
+
+  root_block_device {
+    volume_size           = 20
+    volume_type           = "gp3"
+    encrypted             = true
+    delete_on_termination = true
+  }
+
+  metadata_options {
+    http_endpoint               = "enabled"
+    http_tokens                 = "required"
+    http_put_response_hop_limit = 1
+  }
+
+  user_data = base64encode(templatefile("${path.module}/user_data.sh.tpl", {
+    vm_name      = "claude"
+    llm_provider = "openrouter"
+    llm_model    = "anthropic/claude-sonnet-4.6"
+    llm_api_key  = var.openrouter_api_key
+    inbox_url    = var.inbox_site_url
+  }))
+
+  tags = { Name = "${var.project}-claude", LLM = "claude" }
+
+  lifecycle { ignore_changes = [user_data] }
+}
+
+# -- OpenAI VM -----------------------------------------------------------------
+
+resource "aws_instance" "openai" {
+  ami                         = var.ubuntu_ami_id
+  instance_type               = var.instance_type_api
+  subnet_id                   = aws_subnet.private.id
+  vpc_security_group_ids      = [aws_security_group.vm.id]
+  iam_instance_profile        = aws_iam_instance_profile.openai.name
+  associate_public_ip_address = false
+
+  root_block_device {
+    volume_size           = 20
+    volume_type           = "gp3"
+    encrypted             = true
+    delete_on_termination = true
+  }
+
+  metadata_options {
+    http_endpoint               = "enabled"
+    http_tokens                 = "required"
+    http_put_response_hop_limit = 1
+  }
+
+  user_data = base64encode(templatefile("${path.module}/user_data.sh.tpl", {
+    vm_name      = "openai"
+    llm_provider = "openrouter"
+    llm_model    = "openai/gpt-4o"
+    llm_api_key  = var.openrouter_api_key
+    inbox_url    = var.inbox_site_url
+  }))
+
+  tags = { Name = "${var.project}-openai", LLM = "openai" }
+
+  lifecycle { ignore_changes = [user_data] }
+}
+
+# -- Ollama VM -----------------------------------------------------------------
+
+resource "aws_instance" "ollama" {
+  ami                         = var.ubuntu_ami_id
+  instance_type               = var.instance_type_api
+  subnet_id                   = aws_subnet.private.id
+  vpc_security_group_ids      = [aws_security_group.vm.id]
+  iam_instance_profile        = aws_iam_instance_profile.ollama.name
+  associate_public_ip_address = false
+
+  root_block_device {
+    volume_size           = 20
+    volume_type           = "gp3"
+    encrypted             = true
+    delete_on_termination = true
+  }
+
+  metadata_options {
+    http_endpoint               = "enabled"
+    http_tokens                 = "required"
+    http_put_response_hop_limit = 1
+  }
+
+  user_data = base64encode(templatefile("${path.module}/user_data.sh.tpl", {
+    vm_name      = "ollama"
+    llm_provider = "openrouter"
+    llm_model    = "meta-llama/llama-3.1-8b-instruct"
+    llm_api_key  = var.openrouter_api_key
+    inbox_url    = var.inbox_site_url
+  }))
+
+  tags = { Name = "${var.project}-ollama", LLM = "ollama" }
+
+  lifecycle { ignore_changes = [user_data] }
+}
+
+# -- DeepSeek VM ---------------------------------------------------------------
 
 resource "aws_instance" "deepseek" {
   ami                         = var.ubuntu_ami_id
