@@ -17,7 +17,7 @@ variable "aws_region" {
 variable "local_exec_cloudwatch_bash" {
   description = "Interpreter for CloudWatch log group bootstrap (scripts/ensure-cw-log-groups.sh). Requires bash and aws on PATH. WSL/Git Bash on Windows."
   type        = list(string)
-  default     = ["bash", "-c"]
+  default     = ["C:/Program Files/Git/bin/bash.exe", "-lc"]
 }
 
 variable "project" {
@@ -44,10 +44,17 @@ variable "instance_type_api" {
   default     = "t3.small"
 }
 
-variable "instance_type_ollama" {
-  description = "Instance type for Ollama VM (runs model locally — needs more RAM)"
-  type        = string
-  default     = "t3.large"
+# DISABLED — deepseek-only run
+# variable "instance_type_ollama" {
+#   description = "Instance type for Ollama VM (runs model locally — needs more RAM)"
+#   type        = string
+#   default     = "t3.large"
+# }
+
+variable "firewall_active" {
+  description = "Route private subnet through Network Firewall. Set false during bootstrap (unrestricted internet), true before running the experiment."
+  type        = bool
+  default     = false
 }
 
 variable "inbox_site_url" {
@@ -55,20 +62,21 @@ variable "inbox_site_url" {
   type        = string
 }
 
-variable "anthropic_api_key" {
-  description = "Anthropic API key"
-  type        = string
-  sensitive   = true
-}
+# DISABLED — deepseek-only run
+# variable "anthropic_api_key" {
+#   description = "Anthropic API key"
+#   type        = string
+#   sensitive   = true
+# }
+#
+# variable "openai_api_key" {
+#   description = "OpenAI API key"
+#   type        = string
+#   sensitive   = true
+# }
 
-variable "openai_api_key" {
-  description = "OpenAI API key"
-  type        = string
-  sensitive   = true
-}
-
-variable "deepseek_api_key" {
-  description = "Deepseek API key"
+variable "openrouter_api_key" {
+  description = "OpenRouter API key"
   type        = string
   sensitive   = true
 }
